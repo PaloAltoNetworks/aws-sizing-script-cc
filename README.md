@@ -11,13 +11,13 @@ The easiest way to run this script is directly from AWS CloudShell.
 ### To scan your entire AWS Organization (must be run from the Management/Master account):
 
 ```bash
-wget -qO aws-sizing-cc.sh https://raw.githubusercontent.com/Valley-Cortex-Low/aws-sizing-script-cc/main/aws-sizing-cc.sh && chmod +x aws-sizing-cc.sh && ./aws-sizing-cc.sh -o
+wget -qO aws-sizing-cc.sh https://raw.githubusercontent.com/PaloAltoNetworks/aws-sizing-script-cc/main/aws-sizing-cc.sh && chmod +x aws-sizing-cc.sh && ./aws-sizing-cc.sh -o
 ```
 
 ### To scan only the current single account:
 
 ```bash
-git -qO aws-sizing-cc.sh https://raw.githubusercontent.com/Valley-Cortex-Low/aws-sizing-script-cc/main/aws-sizing-cc.sh && chmod +x aws-sizing-cc.sh && ./aws-sizing-cc.sh
+git -qO aws-sizing-cc.sh https://raw.githubusercontent.com/PaloAltoNetworks/aws-sizing-script-cc/main/aws-sizing-cc.sh && chmod +x aws-sizing-cc.sh && ./aws-sizing-cc.sh
 ```
 
 ## 📋 Prerequisites & Permissions
