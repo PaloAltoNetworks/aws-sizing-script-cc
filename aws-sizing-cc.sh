@@ -29,13 +29,10 @@ function printHelp {
     echo ""
     echo "Available flags:"
     echo " -h         Display the help info"
-    echo " -n <region> Single region to scan"
-    echo " -o         Organization mode"
-    echo "             This option will fetch all sub-accounts associated with an organization"
-    echo "             and assume the default (or specified) cross account role in order to iterate through and"
-    echo "             scan resources in each sub-account. This is typically run from the admin user in"
-    echo "             the master account."
-    echo " -r <role>  Specify a non default role to assume in combination with organization mode"
+    echo " -n <region> Single region to scan (e.g., us-east-1)"
+    echo " -o         Organization mode (scans all accounts in AWS Org)"
+    echo " -r <role>  Specify a custom cross-account role to assume (default: OrganizationAccountAccessRole)"
+    echo " -e <file>  Export results per account to a CSV file (e.g., -e output.csv)"
     echo ""
     exit 1
 }
@@ -58,12 +55,14 @@ ORG_MODE=false
 ROLE="OrganizationAccountAccessRole"
 REGION=""
 STATE="running,stopped"
+EXPORT_FILE=""
 
-# Get options
-while getopts ":cdhn:or:s" opt; do
+# Get options (Notice the 'e:' added for the export flag)
+while getopts ":cdhe:n:or:s" opt; do
   case ${opt} in
     c) SSM_MODE=true ;;
     h) printHelp ;;
+    e) EXPORT_FILE="$OPTARG" ;;
     n) REGION="$OPTARG" ;;
     o) ORG_MODE=true ;;
     r) ROLE="$OPTARG" ;;
@@ -72,6 +71,12 @@ while getopts ":cdhn:or:s" opt; do
  esac
 done
 shift $((OPTIND-1))
+
+# Initialize CSV if flag is passed
+if [ -n "$EXPORT_FILE" ]; then
+    echo "Initializing CSV export at $EXPORT_FILE..."
+    echo "Account_ID,VM_Workloads,EKS_Node_Workloads,Serverless_Workloads,CaaS_Workloads,Container_Image_Workloads,S3_Workloads,PaaS_Workloads,SaaS_Workloads,Total_Account_Workloads" > "$EXPORT_FILE"
+fi
 
 # Get active regions
 echo "Fetching enabled regions for the account..."
@@ -122,8 +127,10 @@ total_paas_workloads=0
 # Function to count resources in a single account
 count_resources() {
     local account_id=$1
+    local current_caller=$2
 
-    if [ "$ORG_MODE" == true ]; then
+    # Only try to assume a role if we are in ORG_MODE AND the target account is NOT the account we are currently logged into
+    if [ "$ORG_MODE" == true ] && [ "$account_id" != "$current_caller" ]; then
         creds=$(aws sts assume-role --role-arn "arn:aws:iam::$account_id:role/$ROLE" \
             --role-session-name "OrgSession" --query "Credentials" --output json 2> /dev/null)
         local assume_role_exit_code=$?
@@ -141,15 +148,19 @@ count_resources() {
         export AWS_ACCESS_KEY_ID=$(echo $creds | jq -r ".AccessKeyId")
         export AWS_SECRET_ACCESS_KEY=$(echo $creds | jq -r ".SecretAccessKey")
         export AWS_SESSION_TOKEN=$(echo $creds | jq -r ".SessionToken")
+    elif [ "$ORG_MODE" == true ] && [ "$account_id" == "$current_caller" ]; then
+        echo "  (Management Account Detected: Scanning with current credentials instead of assuming role)"
     fi
 
     echo ""
     echo "Counting Cloud Security resources in account: $account_id"
         
-    # Count IAM Users (Proxy for internal SaaS/Identity users if needed)
+    # Count IAM Users
     echo "  Counting IAM Users..."
     iam_count=$(aws iam list-users --query "Users[*].UserName" --output text 2>/dev/null | wc -w)
     total_iam_users=$((total_iam_users + iam_count))
+    account_saas_workloads=$(( (iam_count + 10 - 1) / 10 ))
+    if (( iam_count == 0 )); then account_saas_workloads=0; fi
     echo "  $(tput bold)$(tput setaf 2)IAM Users: $iam_count$(tput sgr0)"
 
     # Count EC2 instances
@@ -192,28 +203,17 @@ count_resources() {
     total_eks_workloads=$total_eks_nodes
     echo "  $(tput bold)$(tput setaf 2)VM (Container) Workloads: $account_eks_nodes$(tput sgr0)"
 
-    # Count Serverless Functions
+    # Count Serverless Functions (OPTIMIZED)
     echo "  Counting serverless functions..."
-    active_functions=0
-    inactive_functions=0
-    function_arns=$(aws lambda list-functions --query 'Functions[].FunctionArn' --output text 2>/dev/null)
-
-    if [ -n "$function_arns" ]; then
-        for arn in $function_arns; do
-            function_state_info=$(aws lambda get-function-configuration --function-name "$arn" --query '{State: State, LastUpdateStatus: LastUpdateStatus}' --output json 2>/dev/null)
-            state=$(echo "$function_state_info" | jq -r '.State')
-            last_update_status=$(echo "$function_state_info" | jq -r '.LastUpdateStatus')
-
-            if [[ "$state" == "Active" && "$last_update_status" == "Successful" ]]; then
-                active_functions=$((active_functions + 1))
-            else
-                inactive_functions=$((inactive_functions + 1))
-            fi
-        done
+    lambda_data=$(aws lambda list-functions --query 'Functions[*].[State, LastUpdateStatus]' --output json 2>/dev/null)
+    
+    if [ -n "$lambda_data" ] && [ "$lambda_data" != "null" ]; then
+        account_total_functions=$(echo "$lambda_data" | jq 'length')
+    else
+        account_total_functions=0
     fi
-    account_total_functions=$((active_functions + inactive_functions))
+    
     total_functions=$((total_functions + account_total_functions))
-
     serverless_workloads=$(( (account_total_functions + 25 - 1) / 25 ))
     if (( account_total_functions == 0 )); then 
         serverless_workloads=0
@@ -272,9 +272,19 @@ count_resources() {
 
     # Subtracting the allowance for nodes/VMs from total images to find billable image workload
     container_image_workload=$(( account_images_across_all_registries - ((ec2_count + account_eks_nodes) * 10) ))
-    container_image_workload=$(( container_image_workload < 0 ? 0 : container_image_workload ))
-    total_container_image_workloads=$((total_container_image_workloads + container_image_workload))
     
+    # Ensure it doesn't go below zero
+    if (( container_image_workload < 0 )); then
+        container_image_workload=0
+    fi
+    
+    # Divide the remaining images by 10 per the Cortex Metering Guide
+    container_image_workload=$(( (container_image_workload + 10 - 1) / 10 ))
+    if (( container_image_workload == 0 )) && (( account_images_across_all_registries == 0 )); then
+        container_image_workload=0
+    fi
+    
+    total_container_image_workloads=$((total_container_image_workloads + container_image_workload))
     echo "  Total Images in Account: $account_images_across_all_registries"
     echo "  $(tput bold)$(tput setaf 2)Container Image Workloads: $container_image_workload$(tput sgr0)"
 
@@ -324,6 +334,12 @@ count_resources() {
     total_paas_workloads=$((total_paas_workloads + paas_workloads))
     echo "  $(tput bold)$(tput setaf 2)PaaS Workloads: $paas_workloads$(tput sgr0)"
 
+    # Append to CSV if flag was used
+    if [ -n "$EXPORT_FILE" ]; then
+        account_grand_total=$((ec2_count + account_eks_nodes + serverless_workloads + caas_workloads + container_image_workload + s3_workloads + paas_workloads + account_saas_workloads))
+        echo "$account_id,$ec2_count,$account_eks_nodes,$serverless_workloads,$caas_workloads,$container_image_workload,$s3_workloads,$paas_workloads,$account_saas_workloads,$account_grand_total" >> "$EXPORT_FILE"
+    fi
+
     # Unset temporary credentials
     if [ "$ORG_MODE" == true ] && [ -n "$AWS_SESSION_TOKEN" ]; then
         unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
@@ -331,6 +347,10 @@ count_resources() {
 }
 
 # Main logic
+# Identify who is running the script right now so we don't try to assume a role into ourselves
+caller_account=$(aws sts get-caller-identity --query "Account" --output text)
+check_error $? "Failed to get caller identity for the current account."
+
 if [ "$ORG_MODE" == true ]; then
     accounts=$(aws organizations list-accounts --query "Accounts[?Status=='ACTIVE'].Id" --output text)
     check_error $? "Failed to list accounts in the organization. Ensure you have 'organizations:ListAccounts' permission."
@@ -341,15 +361,14 @@ if [ "$ORG_MODE" == true ]; then
     fi
 
     for account_id in $accounts; do
-        count_resources "$account_id"
+        # Pass both the target account and the caller account to the function
+        count_resources "$account_id" "$caller_account"
     done
 else
-    current_account=$(aws sts get-caller-identity --query "Account" --output text)
-    check_error $? "Failed to get caller identity for the current account."
-    count_resources "$current_account"
+    count_resources "$caller_account" "$caller_account"
 fi
 
-# Calculate SaaS Workloads (10 IAM users = 1 workload)
+# Calculate SaaS Workloads (10 IAM users = 1 workload) globally
 saas_workloads=$(( (total_iam_users + 10 - 1) / 10 ))
 if (( total_iam_users == 0 )); then
     saas_workloads=0
@@ -357,6 +376,13 @@ fi
 
 # Calculate Totals
 GRAND_TOTAL_WORKLOADS=$((total_ec2_instances + total_eks_workloads + total_serverless_workloads + total_s3_workloads + total_caas_workloads + total_container_image_workloads + total_paas_workloads + saas_workloads))
+
+# Append Global Totals to CSV if flag was used
+if [ -n "$EXPORT_FILE" ]; then
+    echo "GRAND_TOTAL,$total_ec2_instances,$total_eks_workloads,$total_serverless_workloads,$total_caas_workloads,$total_container_image_workloads,$total_s3_workloads,$total_paas_workloads,$saas_workloads,$GRAND_TOTAL_WORKLOADS" >> "$EXPORT_FILE"
+    echo ""
+    echo "✅ Export complete! CSV saved to $EXPORT_FILE"
+fi
 
 # Calculate GB Ingest using basic floating point math via awk (Total Workloads / 50)
 GB_INGEST_PER_DAY=$(awk "BEGIN {printf \"%.2f\", $GRAND_TOTAL_WORKLOADS / 50}")
@@ -377,5 +403,4 @@ echo "  --------------------------------------"
 echo "  $(tput bold)$(tput setaf 2)** SUM TOTAL AWS WORKLOADS: $GRAND_TOTAL_WORKLOADS **$(tput sgr0)"
 echo "  $(tput bold)$(tput setaf 2)** ESTIMATED CORTEX CLOUD INGEST: $GB_INGEST_PER_DAY GB / Day **$(tput sgr0)"
 echo "  --------------------------------------"
-echo "    
 echo ""
