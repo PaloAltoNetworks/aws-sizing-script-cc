@@ -11,7 +11,7 @@ The easiest way to run this script is directly from AWS CloudShell.
 ### To scan your entire AWS Organization (must be run from the Management/Master account):
 
 ```bash
-wget -qO aws-sizing-cc.sh https://raw.githubusercontent.com/PaloAltoNetworks/aws-sizing-script-cc/main/aws-sizing-cc.sh && chmod +x aws-sizing-cc.sh && ./aws-sizing-cc.sh -o
+wget -qO aws-sizing-cc.sh https://raw.githubusercontent.com/PaloAltoNetworks/aws-sizing-script-cc/main/aws-sizing-cc.sh && chmod +x aws-sizing-cc.sh && ./aws-sizing-cc.sh -o -e sizing-report.csv
 ```
 
 ### To scan only the current single account:
@@ -44,6 +44,7 @@ dot /aws-sizing-cc.sh [flags]
 | Flag | Description |
 |---|---|
 | `-o` | Organization mode (Recommended). Fetches all active sub-accounts and iterates through them. |
+| `-e <file>` | Export to CSV. Generates a clean CSV file breaking down workload counts per account (e.g., -e output.csv). |
 | `-n <region>` | Single region to scan (e.g., `-n us-east-1`). If omitted, it scans all enabled regions. |
 | `-r <role>` | Specify a custom cross-account role to assume (default is `OrganizationAccountAccessRole`). |
 | `-h` | Display help info. |
@@ -54,6 +55,7 @@ This script converts raw AWS resources into Cortex Cloud Workloads based on the 
 * **Serverless Workloads (25:1):** Lambda Functions
 * **CaaS Workloads (10:1):** ECS Fargate Services, App Runner Services 
 * **S3 Workloads (10:1):** S3 Buckets 
-* **PaaS Workloads (2:1):** RDS, Aurora, DynamoDB, Redshift 
+* **PaaS Workloads (2:1):** RDS, Aurora, DynamoDB, Redshift
+* **SaaS Workloads (10:1):** AWS IAM Users
 * **Container Images:** ECR images (subtracting allowances for existing VM/Node workloads)
 > Note: The script also counts AWS IAM Users as a baseline, but external SaaS users (e.g., Microsoft 365, Google Workspace) must be counted separately from their respective platforms.
