@@ -349,8 +349,14 @@ else
     count_resources "$current_account"
 fi
 
+# Calculate SaaS Workloads (10 IAM users = 1 workload)
+saas_workloads=$(( (total_iam_users + 10 - 1) / 10 ))
+if (( total_iam_users == 0 )); then
+    saas_workloads=0
+fi
+
 # Calculate Totals
-GRAND_TOTAL_WORKLOADS=$((total_ec2_instances + total_eks_workloads + total_serverless_workloads + total_s3_workloads + total_caas_workloads + total_container_image_workloads + total_paas_workloads))
+GRAND_TOTAL_WORKLOADS=$((total_ec2_instances + total_eks_workloads + total_serverless_workloads + total_s3_workloads + total_caas_workloads + total_container_image_workloads + total_paas_workloads + saas_workloads))
 
 # Calculate GB Ingest using basic floating point math via awk (Total Workloads / 50)
 GB_INGEST_PER_DAY=$(awk "BEGIN {printf \"%.2f\", $GRAND_TOTAL_WORKLOADS / 50}")
@@ -366,6 +372,7 @@ echo "     S3 workloads: $total_s3_workloads"
 echo "     CaaS workloads: $total_caas_workloads"
 echo "     Container Image workloads: $total_container_image_workloads"
 echo "     PaaS workloads: $total_paas_workloads"  
+echo "     SaaS workloads: $saas_workloads (Raw User Count: $total_iam_users)"
 echo "  --------------------------------------"
 echo "  $(tput bold)$(tput setaf 2)** SUM TOTAL AWS WORKLOADS: $GRAND_TOTAL_WORKLOADS **$(tput sgr0)"
 echo "  $(tput bold)$(tput setaf 2)** ESTIMATED CORTEX CLOUD INGEST: $GB_INGEST_PER_DAY GB / Day **$(tput sgr0)"
