@@ -75,7 +75,7 @@ shift $((OPTIND-1))
 # Initialize CSV if flag is passed
 if [ -n "$EXPORT_FILE" ]; then
     echo "Initializing CSV export at $EXPORT_FILE..."
-    echo "Account_ID,Raw_EC2_VMs,EC2_Workloads,Raw_EKS_Nodes,EKS_Workloads,Raw_Serverless,Serverless_Workloads,Raw_CaaS,CaaS_Workloads,Raw_Images,Image_Workloads,Raw_S3_Buckets,S3_Workloads,Raw_PaaS_DBs,PaaS_Workloads,Raw_IAM_Users,SaaS_Workloads,Total_Account_Workloads" > "$EXPORT_FILE"
+    echo "Account_ID,Raw_EC2_VMs,Raw_EKS_Nodes,Raw_Serverless,Raw_CaaS,Raw_Images,Raw_S3_Buckets,Raw_PaaS_DBs,Raw_IAM_Users" > "$EXPORT_FILE"
 fi
 
 # Get active regions
@@ -114,15 +114,6 @@ total_s3_buckets=0
 total_paas_resources=0
 total_iam_users=0
 
-# Initialize global WORKLOAD counters
-total_ec2_workloads=0
-total_eks_workloads=0
-total_serverless_workloads=0
-total_caas_workloads=0
-total_container_image_workloads=0
-total_s3_workloads=0
-total_paas_workloads=0
-
 # Function to count resources in a single account
 count_resources() {
     local account_id=$1
@@ -154,76 +145,57 @@ count_resources() {
     echo "Counting Cloud Security resources in account: $account_id"
         
     # Count IAM Users
-    echo "  Counting IAM Users..."
     iam_count=$(aws iam list-users --query "Users[*].UserName" --output text 2>/dev/null | wc -w)
     total_iam_users=$((total_iam_users + iam_count))
-    account_saas_workloads=$(( (iam_count + 10 - 1) / 10 ))
-    if (( iam_count == 0 )); then account_saas_workloads=0; fi
-    echo "  $(tput bold)$(tput setaf 2)IAM Users: $iam_count$(tput sgr0)"
+    echo "  IAM Users: $iam_count"
 
     # Count EC2 instances
     if [[ "${REGION}" ]]; then
         ec2_count=$(aws ec2 describe-instances --region $REGION --filters "Name=instance-state-name,Values=$STATE" --query "Reservations[*].Instances[*]" --output json | jq 'length')
     else
-        echo "  Counting EC2 instances across all accessible regions..."
         ec2_count=0
         for r in $activeRegions; do
             count_in_region=$(aws ec2 describe-instances --region "$r" --filters "Name=instance-state-name,Values=$STATE" --query "Reservations[*].Instances[*]" --output json 2>/dev/null | jq 'length')
             if [ $? -eq 0 ] && [[ "$count_in_region" =~ ^[0-9]+$ ]] && [ "$count_in_region" -gt 0 ]; then
-                echo "    Region $r: $count_in_region instances"
                 ec2_count=$((ec2_count + count_in_region))
             fi
         done
     fi
-    echo "  $(tput bold)$(tput setaf 2)VM Workloads: $ec2_count$(tput sgr0)"
+    echo "  EC2 VMs: $ec2_count"
     total_ec2_instances=$((total_ec2_instances + ec2_count))
 
     # Count EKS nodes
-    echo "  Counting EKS Nodes..."
     account_eks_nodes=0
     if [[ "${REGION}" ]]; then
         clusters=$(aws eks list-clusters --region $REGION --query "clusters" --output text 2>/dev/null)
     else
         clusters=$(aws eks list-clusters --query "clusters" --output text 2>/dev/null)
     fi        
-    
     for cluster in $clusters; do
         node_groups=$(aws eks list-nodegroups --cluster-name "$cluster" --query 'nodegroups' --output text 2>/dev/null)
         for node_group in $node_groups; do
             node_count=$(aws eks describe-nodegroup --cluster-name "$cluster" --nodegroup-name "$node_group" --query "nodegroup.scalingConfig.desiredSize" --output text 2>/dev/null)
             if [ -n "$node_count" ]; then
-                echo "    EKS cluster '$cluster' nodegroup $node_group nodes: $node_count"
                 account_eks_nodes=$((account_eks_nodes + node_count))
             fi
         done
     done
     total_eks_nodes=$((total_eks_nodes + account_eks_nodes))
-    total_eks_workloads=$total_eks_nodes
-    echo "  $(tput bold)$(tput setaf 2)VM (Container) Workloads: $account_eks_nodes$(tput sgr0)"
+    echo "  EKS Nodes: $account_eks_nodes"
 
     # Count Serverless Functions
-    echo "  Counting serverless functions..."
     lambda_data=$(aws lambda list-functions --query 'Functions[*].[State, LastUpdateStatus]' --output json 2>/dev/null)
-    
     if [ -n "$lambda_data" ] && [ "$lambda_data" != "null" ]; then
         account_total_functions=$(echo "$lambda_data" | jq 'length')
     else
         account_total_functions=0
     fi
-    
     total_functions=$((total_functions + account_total_functions))
-    serverless_workloads=$(( (account_total_functions + 25 - 1) / 25 ))
-    if (( account_total_functions == 0 )); then 
-        serverless_workloads=0
-    fi
-    total_serverless_workloads=$((total_serverless_workloads + serverless_workloads))
-    echo "  $(tput bold)$(tput setaf 2)Serverless Workloads: $serverless_workloads (Raw: $account_total_functions)$(tput sgr0)"
+    echo "  Serverless Functions: $account_total_functions"
 
     # Count CaaS
-    echo "  Counting managed container resources (CaaS)..."
     ecs_fargate_services=0
     apprunner_services=0
-
     ecs_clusters=$(aws ecs list-clusters --query 'clusterArns[]' --output text 2>/dev/null)
     for cluster_arn in $ecs_clusters; do
         service_arns=$(aws ecs list-services --cluster "$cluster_arn" --query 'serviceArns[]' --output text 2>/dev/null)
@@ -234,31 +206,21 @@ count_resources() {
             fi
         done
     done
-
     apprunner_service_arns=$(aws apprunner list-services --query 'ServiceSummaryList[].ServiceArn' --output text 2>/dev/null)
     for service_arn in $apprunner_service_arns; do
         apprunner_services=$((apprunner_services + 1))
     done
+    account_caas_resources=$((ecs_fargate_services + apprunner_services))
+    total_caas_resources=$((total_caas_resources + account_caas_resources))
+    echo "  CaaS Resources (Fargate/AppRunner): $account_caas_resources"
 
-    total_managed_containers=$((ecs_fargate_services + apprunner_services))
-    total_caas_resources=$((total_caas_resources + total_managed_containers))
-    caas_workloads=$(( (total_managed_containers + 10 - 1) / 10 ))
-    if (( total_managed_containers == 0 )); then 
-        caas_workloads=0
-    fi
-    total_caas_workloads=$((total_caas_workloads + caas_workloads))
-    echo "  $(tput bold)$(tput setaf 2)CaaS Workloads: $caas_workloads (Raw: $total_managed_containers)$(tput sgr0)"
-
-    # Count Container Images
-    echo "  Counting container images in ECR across regions..."
+    # Count Container Images in Registries
     account_images_across_all_registries=0
-
     if [[ "${REGION}" ]]; then
         regions_to_scan=$REGION
     else
         regions_to_scan=$activeRegions
     fi
-
     for r in $regions_to_scan; do
         repository_names=$(aws ecr describe-repositories --region "$r" --query 'repositories[].repositoryName' --output text 2>/dev/null)
         if [ -n "$repository_names" ]; then
@@ -268,41 +230,19 @@ count_resources() {
             done
         fi
     done
-
     total_container_images=$((total_container_images + account_images_across_all_registries))
-
-    container_image_workload=$(( account_images_across_all_registries - ((ec2_count + account_eks_nodes) * 10) ))
-    if (( container_image_workload < 0 )); then
-        container_image_workload=0
-    fi
-    
-    container_image_workload=$(( (container_image_workload + 10 - 1) / 10 ))
-    if (( container_image_workload == 0 )) && (( account_images_across_all_registries == 0 )); then
-        container_image_workload=0
-    fi
-    
-    total_container_image_workloads=$((total_container_image_workloads + container_image_workload))
-    echo "  Total Images in Account: $account_images_across_all_registries"
-    echo "  $(tput bold)$(tput setaf 2)Container Image Workloads: $container_image_workload$(tput sgr0)"
+    echo "  ECR Images: $account_images_across_all_registries"
 
     # Count S3 buckets
-    echo "  Counting S3 bucket workloads..."
     if [[ "${REGION}" ]]; then
         s3_count=$(aws s3api list-buckets --region $REGION --query "Buckets[*].Name" --output text 2>/dev/null | wc -w)
     else
         s3_count=$(aws s3api list-buckets --query "Buckets[*].Name" --output text 2>/dev/null | wc -w)
     fi   
     total_s3_buckets=$((total_s3_buckets + s3_count))
-    s3_workloads=$(( (s3_count + 10 - 1) / 10 ))
-    if (( s3_count == 0 )); then
-        s3_workloads=0
-    fi
-    total_s3_workloads=$((total_s3_workloads + s3_workloads))
-    echo "  $(tput bold)$(tput setaf 2)S3 workloads: $s3_workloads (Raw: $s3_count)$(tput sgr0)"
+    echo "  S3 Buckets: $s3_count"
 
     # Count PaaS workloads
-    echo "  Counting PaaS workloads..."
-    
     if [[ "${REGION}" ]]; then
         aurora_count=$(aws rds describe-db-clusters --region $REGION --query "DBClusters[?Engine=='aurora'].DBClusterIdentifier" --output text 2>/dev/null | wc -w)
         rds_count=$(aws rds describe-db-instances --region $REGION --query "DBInstances[?Engine=='mysql' || Engine=='mariadb' || Engine=='postgres'].DBInstanceIdentifier" --output text 2>/dev/null | wc -w)
@@ -314,21 +254,13 @@ count_resources() {
         dynamodb_count=$(aws dynamodb list-tables --query "TableNames" --output text 2>/dev/null | wc -w)
         redshift_count=$(aws redshift describe-clusters --query "Clusters[*].ClusterIdentifier" --output text 2>/dev/null | wc -w)
     fi  
-    
     account_paas_total=$((rds_count + aurora_count + dynamodb_count + redshift_count))
     total_paas_resources=$((total_paas_resources + account_paas_total))
+    echo "  PaaS Databases: $account_paas_total"
 
-    paas_workloads=$(( (account_paas_total + 2 - 1) / 2 ))
-    if (( account_paas_total == 0 )); then
-        paas_workloads=0
-    fi
-    total_paas_workloads=$((total_paas_workloads + paas_workloads))
-    echo "  $(tput bold)$(tput setaf 2)PaaS Workloads: $paas_workloads (Raw: $account_paas_total)$(tput sgr0)"
-
-    # Append to CSV if flag was used
+    # Append RAW data to CSV if flag was used
     if [ -n "$EXPORT_FILE" ]; then
-        account_grand_total=$((ec2_count + account_eks_nodes + serverless_workloads + caas_workloads + container_image_workload + s3_workloads + paas_workloads + account_saas_workloads))
-        echo "$account_id,$ec2_count,$ec2_count,$account_eks_nodes,$account_eks_nodes,$account_total_functions,$serverless_workloads,$total_managed_containers,$caas_workloads,$account_images_across_all_registries,$container_image_workload,$s3_count,$s3_workloads,$account_paas_total,$paas_workloads,$iam_count,$account_saas_workloads,$account_grand_total" >> "$EXPORT_FILE"
+        echo "$account_id,$ec2_count,$account_eks_nodes,$account_total_functions,$account_caas_resources,$account_images_across_all_registries,$s3_count,$account_paas_total,$iam_count" >> "$EXPORT_FILE"
     fi
 
     # Unset temporary credentials
@@ -357,18 +289,45 @@ else
     count_resources "$caller_account" "$caller_account"
 fi
 
-# Calculate SaaS Workloads globally
+# ---------------------------------------------------------
+# GLOBAL WORKLOAD CALCULATIONS (Applied to the Total Estate)
+# ---------------------------------------------------------
+total_ec2_workloads=$total_ec2_instances
+total_eks_workloads=$total_eks_nodes
+
+# Ratios derived from Cortex Cloud Metering Guide
+total_serverless_workloads=$(( (total_functions + 25 - 1) / 25 ))
+if (( total_functions == 0 )); then total_serverless_workloads=0; fi
+
+total_caas_workloads=$(( (total_caas_resources + 10 - 1) / 10 ))
+if (( total_caas_resources == 0 )); then total_caas_workloads=0; fi
+
+total_s3_workloads=$(( (total_s3_buckets + 10 - 1) / 10 ))
+if (( total_s3_buckets == 0 )); then total_s3_workloads=0; fi
+
+total_paas_workloads=$(( (total_paas_resources + 2 - 1) / 2 ))
+if (( total_paas_resources == 0 )); then total_paas_workloads=0; fi
+
 saas_workloads=$(( (total_iam_users + 10 - 1) / 10 ))
-if (( total_iam_users == 0 )); then
-    saas_workloads=0
-fi
+if (( total_iam_users == 0 )); then saas_workloads=0; fi
 
-# Calculate Totals
-GRAND_TOTAL_WORKLOADS=$((total_ec2_instances + total_eks_workloads + total_serverless_workloads + total_s3_workloads + total_caas_workloads + total_container_image_workloads + total_paas_workloads + saas_workloads))
+# Container Image Math: Subtract 10 free images per deployed VM/Node, then bill remainder at 10:1
+global_free_image_quota=$(( (total_ec2_instances + total_eks_nodes) * 10 ))
+billable_images=$(( total_container_images - global_free_image_quota ))
+if (( billable_images < 0 )); then billable_images=0; fi
 
-# Append Global Totals to CSV if flag was used
+total_container_image_workloads=$(( (billable_images + 10 - 1) / 10 ))
+if (( billable_images == 0 )); then total_container_image_workloads=0; fi
+
+# Calculate Grand Totals
+GRAND_TOTAL_WORKLOADS=$((total_ec2_workloads + total_eks_workloads + total_serverless_workloads + total_s3_workloads + total_caas_workloads + total_container_image_workloads + total_paas_workloads + saas_workloads))
+
+# Append Global Totals and Calculated Workloads to CSV
 if [ -n "$EXPORT_FILE" ]; then
-    echo "GRAND_TOTAL,$total_ec2_instances,$total_ec2_instances,$total_eks_nodes,$total_eks_workloads,$total_functions,$total_serverless_workloads,$total_caas_resources,$total_caas_workloads,$total_container_images,$total_container_image_workloads,$total_s3_buckets,$total_s3_workloads,$total_paas_resources,$total_paas_workloads,$total_iam_users,$saas_workloads,$GRAND_TOTAL_WORKLOADS" >> "$EXPORT_FILE"
+    echo "======================================" >> "$EXPORT_FILE"
+    echo "RAW_GLOBAL_TOTALS,$total_ec2_instances,$total_eks_nodes,$total_functions,$total_caas_resources,$total_container_images,$total_s3_buckets,$total_paas_resources,$total_iam_users" >> "$EXPORT_FILE"
+    echo "CALCULATED_WORKLOADS,$total_ec2_workloads,$total_eks_workloads,$total_serverless_workloads,$total_caas_workloads,$total_container_image_workloads,$total_s3_workloads,$total_paas_workloads,$saas_workloads" >> "$EXPORT_FILE"
+    echo "GRAND_TOTAL_WORKLOADS,,,,,,,$GRAND_TOTAL_WORKLOADS" >> "$EXPORT_FILE"
     echo ""
     echo "✅ Export complete! CSV saved to $EXPORT_FILE"
 fi
@@ -379,7 +338,7 @@ echo ""
 echo "  ======================================"
 echo "  -- FINAL AWS ESTATE & WORKLOAD COUNTS --"
 echo "  ======================================"
-echo "     VMs (EC2):             $total_ec2_instances Raw -> $total_ec2_instances Workloads"
+echo "     VMs (EC2):             $total_ec2_instances Raw -> $total_ec2_workloads Workloads"
 echo "     VMs (EKS Nodes):       $total_eks_nodes Raw -> $total_eks_workloads Workloads"
 echo "     Serverless Functions:  $total_functions Raw -> $total_serverless_workloads Workloads"
 echo "     CaaS Containers:       $total_caas_resources Raw -> $total_caas_workloads Workloads"
