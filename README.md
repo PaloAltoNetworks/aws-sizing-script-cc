@@ -52,9 +52,8 @@ dot /aws-sizing-cc.sh [flags]
 This script converts raw AWS resources into Cortex Cloud Workloads based on the following sizing ratios:
 * **VM Workloads (1:1):** EC2 Instances, EKS Nodes
 * **Serverless Workloads (25:1):** Lambda Functions
-*
-d**CaaS Workloads (10:1):** ECS Fargate Services, App Runner Services 
-d* **S3 Workloads (10:1):** S3 Buckets 
-d* **PaaS Workloads (2:1):** RDS, Aurora, DynamoDB, Redshift 
-d* **Container Images:** ECR images (subtracting allowances for existing VM/Node workloads)
+* **CaaS Workloads (10:1):** ECS Fargate Services, App Runner Services 
+* **S3 Workloads (10:1):** S3 Buckets 
+* **PaaS Workloads (2:1):** RDS, Aurora, DynamoDB, Redshift 
+* **Container Images:** ECR images (subtracting allowances for existing VM/Node workloads)
 > Note: The script also counts AWS IAM Users as a baseline, but external SaaS users (e.g., Microsoft 365, Google Workspace) must be counted separately from their respective platforms.
